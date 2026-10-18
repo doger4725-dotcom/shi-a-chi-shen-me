@@ -60,8 +60,8 @@ export function createCommunity({toast,refreshLedger,refreshMenu}){
   function openReview(entry){
     reviewEntry=entry;const existing=reviewFor(entry.id);
     $('#review-title').textContent=`${entry.name}，打几颗星？`;$('#review-dish-meta').textContent=`第三食堂 · ${entry.windowName||'用餐记录'} · ${when(entry.date)}`;
-    $('#review-body').value=existing?.body||'';$('#review-alias').value=existing?.alias||nickname;
-    dishStars.set(existing?.rating||0);$('#review-status').textContent='';$('#submit-review').textContent=existing?'保存修改后的评价 →':'提交这顿的评价 →';$('#review-dialog').showModal();
+    $('#review-body').value=existing?.body??entry.personalComment??'';$('#review-alias').value=existing?.alias||nickname;
+    dishStars.set(existing?.rating||entry.personalRating||0);$('#review-status').textContent='';$('#submit-review').textContent=existing?'保存修改后的评价 →':'提交这顿的评价 →';$('#review-dialog').showModal();
   }
   async function submit(formId,statusId,payload,onSuccess){
     const button=$(formId).querySelector('button[type="submit"]');button.disabled=true;$(statusId).textContent='正在保存…';

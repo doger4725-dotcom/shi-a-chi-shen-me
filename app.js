@@ -2,7 +2,9 @@ import { CANTEENS, DISHES, PERIODS, estimateWait, getCandidates, monthlyBudget, 
 import { menuDishFromInput, historySampleFromInput } from './collection.js';
 import { createCommunity } from './community.js';
 import { createNutrition } from './nutrition-ui.js';
-import { normalizeTiming, decisionOptions, weightedPool, chooseWeighted, landingRotation, shiftClock, OBJECTIVES } from './decision.js';
+import { normalizeTiming, decisionOptions, weightedPool, chooseWeighted, shiftClock, OBJECTIVES } from './decision.js';
+import { personalizeCandidates, validRating, ratingOutcome } from './preferences.js';
+import { createPreferencesUI } from './preferences-ui.js';
 import { createDecisionUI } from './decision-ui.js';
 import { CAMPUS_MENU, CAMPUS_OBSERVATIONS, CAMPUS_EXTRAS, CAMPUS_PENDING } from './canteen-data.js';
 
@@ -29,8 +31,8 @@ const state = {
   decision: normalizeTiming(saved?.decision || {}),
 };
 let filters = { period: 'lunch', budget: 18, time: '11:30', canteenId: 'canteen-3', windowName:'', taste: 'all', maxWait: 30 };
-let candidates = [], wheelPool = [], selectedDish = null, spinning = false, wheelRotation = 0, spinTimer, toastTimer;
-let community = null;
+let candidates = [], cardPool = [], selectedDish = null, drawing = false, drawnDish = null, drawTimer, toastTimer;
+let community = null, personalReviews = null;
 const timing = state.decision;
 let decisionUI = null, decisionSnapshot = null;
 const activeMenu = () => state.menuMode==='collected' ? state.customDishes : state.menuMode==='campus' ? CAMPUS_MENU : DISHES;
@@ -55,7 +57,7 @@ function toast(message) {
 }
 function setPage(page, updateHash = true) {
   if (!['student', 'staff', 'wallet', 'data', 'discussion', 'feedback'].includes(page)) page = 'student';
-  if (spinning) cancelSpin();
+  if (drawing) cancelDraw();
   if (page !== 'student') decisionUI?.stopDemo();
   $$('.page').forEach((element) => { element.hidden = element.id !== `page-${page}`; });
   $$('.nav-item').forEach((button) => { const active = button.dataset.page === page; button.classList.toggle('active', active); active ? button.setAttribute('aria-current', 'page') : button.removeAttribute('aria-current'); });
@@ -73,12 +75,12 @@ function inferPeriod(time) {
   if (minutes >= 990 && minutes < 1200) return 'dinner';
   return null;
 }
-function cancelSpin() {
-  clearTimeout(spinTimer); spinning = false;
-  $('#food-wheel').style.transition = 'none';
-  $('#food-wheel').style.transform = 'rotate(0deg)'; wheelRotation = 0;
-  $('#spin-button').disabled = wheelPool.length === 0;
-  $('#spin-button').innerHTML = '帮我选一顿 <span aria-hidden="true">↗</span>';
+function cancelDraw() {
+  clearTimeout(drawTimer); drawing = false; drawnDish = null;
+  $('#meal-card').className = 'meal-card';
+  $('#draw-choice').hidden = true;
+  $('#draw-button').disabled = cardPool.length === 0;
+  $('#draw-button').textContent = '抽一张，开饭 ✦';
 }
 function syncFilterControls() {
   $('#meal-budget').value = filters.budget;
@@ -89,11 +91,11 @@ function syncFilterControls() {
   $$('#period-options button').forEach((button) => { const selected = button.dataset.period === filters.period; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); });
 }
 function applyFilters() {
-  cancelSpin(); syncFilterControls(); renderStudent();
-  $('#spin-result').textContent = '下一顿惊喜，就在这里。';
+  cancelDraw(); syncFilterControls(); renderStudent();
+  $('#draw-result').textContent = '下一顿惊喜，就在这里。';
 }
 function renderStudent() {
-  if (spinning) cancelSpin();
+  if (drawing) cancelDraw();
   $('#budget-help').textContent=budgetHint(filters.budget,filters.period);
   $('#wait-help').textContent=waitHint(filters.maxWait);
   $('#page-student .demo-notice p').textContent=state.menuMode==='campus'?`10/18现场采集 · ${CAMPUS_MENU.length}道午餐 · 09号11:30排队至取餐8分钟（周日）`:menuLabel();
@@ -109,23 +111,23 @@ function renderStudent() {
   $('#queue-detail').title = wait.detail;
   renderTimeBars();
   decisionSnapshot = decisionOptions({ filters, timing, reports: state.reports, history: state.history, observations:observations(), dishes: activeMenu() });
-  candidates = decisionSnapshot.current;
-  wheelPool = weightedPool(candidates);
+  candidates = personalizeCandidates(decisionSnapshot.current, state.entries);
+  // 所有符合条件的菜都入池，低分只降权，不会挤掉其他菜。
+  cardPool = weightedPool(candidates, candidates.length);
   $('#candidate-count').textContent = candidates.length;
   if (candidates.length) {
-    $('#candidate-list').innerHTML = candidates.map((dish) => { const rating=community?.ratingsFor(dish.id), chance=wheelPool.find((item)=>item.id===dish.id); return `<button class="dish-row" data-dish="${escape(dish.id)}" aria-label="选择${escape(dish.name)}，${dish.price}元，总用时${dish.elapsed}分钟"><span class="dish-emoji" aria-hidden="true">${escape(dish.emoji)}</span><span class="dish-info"><strong>${escape(dish.name)}</strong><small>${escape(dish.windowName)} · ${dish.wait.includesPickup?'等至取餐':'排队'} ${dish.wait.minutes} 分钟</small><small class="time-fit">往返用餐 ${dish.elapsed} 分钟 · ${escape(dish.wait.sourceLabel)}</small><span class="dish-rating">${rating?`★ ${rating.average} · ${rating.count} 条评价`:community?.isLoaded()?'暂无评分':'共享评分待接入'}</span></span><span class="dish-price">${money(dish.price)}<small class="dish-chance">${chance?`${chance.percent}% 入选`:'本轮候补'}</small></span></button>`; }).join('');
+    $('#candidate-list').innerHTML = candidates.map((dish) => { const rating=community?.ratingsFor(dish.id), personal=dish.personalRating, chance=cardPool.find((item)=>item.id===dish.id); return `<button class="dish-row" data-dish="${escape(dish.id)}" aria-label="选择${escape(dish.name)}，${dish.price}元，总用时${dish.elapsed}分钟"><span class="dish-emoji" aria-hidden="true">${escape(dish.emoji)}</span><span class="dish-info"><strong>${escape(dish.name)}</strong><small>${escape(dish.windowName)} · ${dish.wait.includesPickup?'等至取餐':'排队'} ${dish.wait.minutes} 分钟</small><small class="time-fit">往返用餐 ${dish.elapsed} 分钟 · ${escape(dish.wait.sourceLabel)}</small><span class="dish-rating">${validRating(personal)?`我评 ${personal} 星 · 权重 ×${dish.preferenceFactor}`:rating?`饭友 ★ ${rating.average} · ${rating.count} 条评价`:'吃完评分，影响下次抽卡'}</span></span><span class="dish-price">${money(dish.price)}<small class="dish-chance">${chance?`${chance.percent}% 入选`:'不在本轮卡池'}</small></span></button>`; }).join('');
   } else {
     const reason = state.menuMode==='campus'&&filters.period!=='lunch' ? '这批照片只采集了午餐。可在资料录入补充其他餐段。' : decisionSnapshot.excluded.length ? `当前最短需要 ${decisionSnapshot.minimum} 分钟，试试增加可用时间。` : wait.closed ? '换个用餐时刻试试。' : !Number.isFinite(filters.budget) || filters.budget <= 0 ? '请输入大于 0 的预算。' : '试试调整预算、等待或口味；照片菜单的口味尚待录入。';
     $('#candidate-list').innerHTML = `<div class="empty-state"><span class="empty-icon" aria-hidden="true">🥢</span><strong>这次没有合适的候选</strong><p>${reason}</p><button class="text-button" id="empty-reset">恢复默认条件 →</button></div>`;
   }
-  if (!spinning) { $('#spin-button').disabled = wheelPool.length === 0; drawWheel(); }
-  $('#wheel-description').textContent = wheelPool.length ? `${OBJECTIVES[timing.objective].label} · ${wheelPool.length} 道入盘${candidates.length>8?'（前8道）':''} · 扇区大小就是概率` : '调整条件，看看有哪些菜入盘';
-  $('#food-wheel').setAttribute('aria-label', wheelPool.length ? `加权转盘：${wheelPool.map((d) => `${d.name}${d.percent}%`).join('、')}` : '暂无候选的转盘');
+  if (!drawing) { $('#draw-button').disabled = cardPool.length === 0; renderCard(); }
+  $('#draw-description').textContent = cardPool.length ? `${OBJECTIVES[timing.objective].label} · ${cardPool.length} 道菜可抽 · 按个人评分调整概率` : '调整预算、时间或窗口，补充卡池';
   const stats = monthlyBudget({ ...currentSettings(), entries: state.entries });
   $('#sidebar-remaining').textContent = money(stats.remaining);
   $('.menu-footnote').textContent = menuLabel();
   $('.sort-label').textContent=OBJECTIVES[timing.objective].label;
-  decisionUI?.render(decisionSnapshot, wheelPool);
+  decisionUI?.render(decisionSnapshot, cardPool);
 }
 function queueFor(time) {
   const windows = filters.windowName ? [filters.windowName] : [...new Set(activeMenu().filter((d)=>d.periods.includes(filters.period)).map((d)=>d.windowName))].filter(Boolean);
@@ -140,34 +142,33 @@ function renderTimeBars() {
   const largest = Math.max(1, ...values.map((v) => v.minutes));
   $('#time-bars').innerHTML = values.map((v) => `<button class="time-column ${v.time === filters.time ? 'selected' : ''}" data-time="${v.time}" aria-pressed="${v.time === filters.time}" aria-label="${v.time}，预计排队${v.minutes}分钟"><span class="time-value">${v.minutes}分</span><span class="bar" style="--bar-height:${Math.max(6, v.minutes / largest * 62)}px"></span><span class="time-label">${v.time}</span></button>`).join('');
 }
-function drawWheel() {
-  const canvas = $('#food-wheel'), ctx = canvas.getContext('2d');
-  const colors = ['#f6cbb4','#e5edbd','#f8e5b6','#dae8dd','#efcec0','#efe5c9','#d9e4bc','#f0ddc5'];
-  ctx.clearRect(0, 0, 600, 600);
-  const slices = wheelPool.length ? wheelPool : [{ name: '等你选条件', emoji: '🥢', arcStart:0,arcEnd:.5 }, { name: '再试一次', emoji: '🍚',arcStart:.5,arcEnd:1 }];
-  slices.forEach((dish, i) => {
-    const start = -Math.PI / 2 + dish.arcStart * Math.PI*2, end = -Math.PI/2 + dish.arcEnd*Math.PI*2, angle=end-start;
-    ctx.beginPath(); ctx.moveTo(300, 300); ctx.arc(300, 300, 294, start, end); ctx.closePath(); ctx.fillStyle = colors[i % colors.length]; ctx.fill(); ctx.strokeStyle = '#fffdf5'; ctx.lineWidth = 3; ctx.stroke();
-    ctx.save(); ctx.translate(300, 300); ctx.rotate(start + angle / 2); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.translate(192, 0); ctx.rotate(Math.PI / 2); ctx.fillStyle = '#4a4d3c'; ctx.font = '500 22px "Microsoft YaHei", sans-serif';
-    const text = angle < .38 ? `${i+1}` : dish.name.length > 7 ? dish.name.slice(0, 6) + '…' : dish.name;
-    ctx.fillText(text, 0, 18, 175); if(dish.percent!==undefined){ctx.font='19px "Microsoft YaHei", sans-serif';ctx.fillText(`${dish.percent}%`,0,45,100);}ctx.font = '35px "Segoe UI Emoji", sans-serif'; ctx.fillText(dish.emoji || '🍚', 0, -30); ctx.restore();
-  });
+function renderCard() {
+  if (drawnDish && cardPool.some(item => item.id === drawnDish.id)) return;
+  $('#meal-card').className = 'meal-card'; $('#draw-choice').hidden = true;
+  $('#draw-result').textContent = cardPool.length ? '下一顿，等你揭晓。' : '还没有符合条件的菜。';
 }
-function spin() {
-  if (spinning || !wheelPool.length) return;
-  decisionUI?.stopDemo(false);persist();
-  const poolSnapshot = wheelPool.slice(); const dish = chooseWeighted(poolSnapshot);
-  spinning = true; $('#spin-button').disabled = true; $('#spin-button').textContent = '正在选一顿好饭…';
-  $('#spin-result').textContent = '转盘正在转动…';
-  const duration = matchMedia('(prefers-reduced-motion: reduce)').matches ? 60 : 3400;
-  const degrees = landingRotation(dish, wheelRotation);
-  $('#food-wheel').style.transition = `transform ${duration}ms cubic-bezier(.12,.68,.08,1)`;
-  $('#food-wheel').style.transform = `rotate(${degrees}deg)`; wheelRotation = degrees;
-  spinTimer = setTimeout(() => {
-    spinning = false; $('#spin-button').disabled = false; $('#spin-button').innerHTML = '再帮我选一顿 <span aria-hidden="true">↗</span>';
-    $('#spin-result').textContent = `转到了：${dish.name} · 本轮 ${dish.percent}%`; showChoice(dish);
-  }, duration + 80);
+function draw() {
+  if (drawing || !cardPool.length) return;
+  decisionUI?.stopDemo(false); persist();
+  const dish = chooseWeighted(cardPool.slice());
+  drawing = true; drawnDish = null; $('#draw-choice').hidden = true;
+  $('#draw-button').disabled = true; $('#draw-button').textContent = '正在揭晓…';
+  $('#draw-result').textContent = '今天的饭卡，即将揭晓。';
+  $('#meal-card').className = 'meal-card drawing';
+  const duration = matchMedia('(prefers-reduced-motion: reduce)').matches ? 30 : 1100;
+  drawTimer = setTimeout(() => {
+    drawing = false; drawnDish = dish;
+    const tier = dish.personalRating >= 4 ? 'gold' : dish.personalRating && dish.personalRating <= 2 ? 'miss' : '';
+    $('#card-front').className = 'card-face card-front ' + tier;
+    $('#card-tier').textContent = validRating(dish.personalRating) ? ratingOutcome(dish.personalRating) + ' · 你上次的评价' : '新口味 · 等你打分';
+    $('#card-food').textContent = dish.emoji || '🍚'; $('#card-name').textContent = dish.name;
+    $('#card-window').textContent = dish.windowName; $('#card-price').textContent = money(dish.price);
+    $('#card-time').textContent = '往返用餐 ' + dish.elapsed + ' 分钟';
+    $('#meal-card').className = 'meal-card revealed';
+    $('#draw-button').disabled = false; $('#draw-button').textContent = '再抽一张 ✦';
+    $('#draw-choice').hidden = false;
+    $('#draw-result').textContent = dish.name + ' · 本轮概率 ' + dish.percent + '%';
+  }, duration);
 }
 function showChoice(dish) {
   if (!dish) return; selectedDish = dish;
@@ -200,7 +201,7 @@ function renderWallet() {
   ];
   $('#wallet-summary').innerHTML = cards.map((c) => `<div class="stat-card ${c.accent ? 'accent' : ''} ${c.over ? 'over' : ''}"><small>${c.label}</small><strong>${money(c.value)}</strong><p>${c.note}</p></div>`).join('');
   const entries = monthEntries(); $('#ledger-count').textContent = entries.length;
-  $('#ledger-list').innerHTML = entries.length ? entries.map((entry) => { const review=community?.reviewFor(entry.id); return `<div class="ledger-row"><div class="ledger-title"><span class="dish-emoji" aria-hidden="true">${escape(entry.emoji || '🍚')}</span><div><strong>${escape(entry.name)}</strong><small>${dateLabel(entry.date, { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' })} · ${escape(entry.periodLabel || '用餐')}${entry.demo ? ' · 示例菜价记录' : ''}</small><button class="meal-review-button" disabled title="共享评分待接服务器">${review?`★ ${review.rating}/5 · 修改评价`:'共享评分待接入'}</button></div></div><div class="row-side"><span class="ledger-amount">${money(entry.price)}</span><button class="row-delete" data-delete-entry="${escape(entry.id)}" aria-label="删除${escape(entry.name)}餐费记录">删除</button></div></div>`; }).join('') : '<div class="empty-state"><span class="empty-icon" aria-hidden="true">🍚</span><strong>第一顿，从今天开始</strong><p>在“今天吃什么”选好菜并确认，<br>就会出现在这里。</p></div>';
+  $('#ledger-list').innerHTML = entries.length ? entries.map((entry) => { const reviewed=validRating(entry.personalRating); return `<div class="ledger-row"><div class="ledger-title"><span class="dish-emoji" aria-hidden="true">${escape(entry.emoji || '🍚')}</span><div><strong>${escape(entry.name)}</strong><small>${dateLabel(entry.date, { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' })} · ${escape(entry.periodLabel || '用餐')}${entry.demo ? ' · 示例菜价记录' : ''}</small><button class="meal-review-button" data-review-meal="${escape(entry.id)}">${reviewed?`★ ${entry.personalRating}/5 · 修改评价`:'吃完了，打个分 ★'}</button>${reviewed?`<p class="personal-review-copy"><span class="meal-outcome ${entry.personalRating>=4?'gold':entry.personalRating<=2?'miss':''}">${ratingOutcome(entry.personalRating)}</span>${escape(entry.personalComment || '')}</p>`:''}</div></div><div class="row-side"><span class="ledger-amount">${money(entry.price)}</span><button class="row-delete" data-delete-entry="${escape(entry.id)}" aria-label="删除${escape(entry.name)}餐费记录">删除</button></div></div>`; }).join('') : '<div class="empty-state"><span class="empty-icon" aria-hidden="true">🍚</span><strong>第一顿，从今天开始</strong><p>在“今天吃什么”选好菜并确认，<br>就会出现在这里。</p></div>';
   $('#sidebar-remaining').textContent = money(stats.remaining);
 }
 
@@ -211,7 +212,7 @@ $$('[data-close]').forEach((button) => button.addEventListener('click', () => { 
 $$('dialog').forEach((dialog) => dialog.addEventListener('click', (event) => { if (event.target === dialog) { const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); } }));
 $('#choice-dialog').addEventListener('close', () => { selectedDish = null; });
 $('#period-options').addEventListener('click', (event) => { const button = event.target.closest('[data-period]'); if (button) { filters.period = button.dataset.period; filters.time = defaultTimes[filters.period]; applyFilters(); } });
-$('#meal-budget').addEventListener('input', (event) => { filters.budget = event.target.value === '' ? 0 : Number(event.target.value); $('#budget-range').value = Math.min(100, Math.max(3, filters.budget)); cancelSpin(); renderStudent(); });
+$('#meal-budget').addEventListener('input', (event) => { filters.budget = event.target.value === '' ? 0 : Number(event.target.value); $('#budget-range').value = Math.min(100, Math.max(3, filters.budget)); cancelDraw(); renderStudent(); });
 $('#budget-range').addEventListener('input', (event) => { filters.budget = Number(event.target.value); applyFilters(); });
 $('#meal-time').addEventListener('change', (event) => { decisionUI?.stopDemo();filters.time = event.target.value; const inferred = inferPeriod(filters.time); if (inferred) filters.period = inferred; applyFilters(); });
 $('#taste-select').addEventListener('change', (event) => { filters.taste = event.target.value; applyFilters(); });
@@ -219,16 +220,17 @@ $('#window-select').addEventListener('change',(event)=>{filters.windowName=event
 $('#wait-range').addEventListener('input', (event) => { filters.maxWait = Number(event.target.value); applyFilters(); });
 const resetFilters = () => { decisionUI?.stopDemo();filters = { period:'lunch',budget:18,time:'11:30',canteenId:'canteen-3',windowName:'',taste:'all',maxWait:30 };Object.assign(timing,normalizeTiming());persist();applyFilters(); };
 $('#reset-filters').addEventListener('click', resetFilters);
-$('#candidate-list').addEventListener('click', (event) => { if (event.target.closest('#empty-reset')) { resetFilters(); return; } const button = event.target.closest('[data-dish]'); if (button) { cancelSpin(); showChoice(candidates.find((d) => d.id === button.dataset.dish)); } });
+$('#candidate-list').addEventListener('click', (event) => { if (event.target.closest('#empty-reset')) { resetFilters(); return; } const button = event.target.closest('[data-dish]'); if (button) { cancelDraw(); showChoice(candidates.find((d) => d.id === button.dataset.dish)); } });
 $('#time-bars').addEventListener('click', (event) => { const button = event.target.closest('[data-time]'); if (button) { filters.time = button.dataset.time; applyFilters(); } });
-$('#spin-button').addEventListener('click', spin);
+$('#draw-button').addEventListener('click', draw);
+$('#draw-choice').addEventListener('click', () => { if (!drawing && drawnDish) showChoice(drawnDish); });
 $('#confirm-meal').addEventListener('click', () => {
   if (!selectedDish) return; const dish = selectedDish; $('#confirm-meal').disabled = true;
   const entry={ id:crypto.randomUUID(), dishId:dish.id, windowName:dish.windowName, name:dish.name, price:dish.price, date:new Date().toISOString(), emoji:dish.emoji, periodLabel:PERIODS[filters.period], demo:!dish.verified };
   state.entries.push(entry);
   const stored = persist(); $('#choice-dialog').close(); renderStudent(); renderWallet();
-  toast(stored ? `已记入 ${dish.name} ${money(dish.price)}。在“我的饭钱”可查看或删除。` : '已暂记本页，浏览器未能持久保存。');
-  // 静态版先完成记账，共享评价接入服务器后启用。
+  toast(stored ? `已记入 ${dish.name} ${money(dish.price)}。吃完后到“我的饭钱”打分。` : '已暂记本页，浏览器未能持久保存。');
+  // 吃完后在账本打分，个人评分随后参与抽卡。
 });
 $('#report-form').addEventListener('submit', (event) => {
   event.preventDefault(); const targetTime = $('#report-time').value, minutes = Number($('#report-minutes').value), period = inferPeriod(targetTime);
@@ -237,21 +239,21 @@ $('#report-form').addEventListener('submit', (event) => {
   const report = { id:crypto.randomUUID(),canteenId:'canteen-3',windowName:$('#report-window').value.trim(),minutes,targetTime,period,createdAt:Date.now(),method:$('#report-method').value,measure:$('#report-measure').value };
   state.reports.push(report); state.reports = state.reports.slice(-60); const stored = persist();
   $('#report-status').textContent = stored ? `已发布：${targetTime} 预计等 ${minutes} 分钟。点击右侧按钮查看学生端。` : '已暂存本页，浏览器无法持久保存。';
-  renderReports(); if (spinning) cancelSpin(); renderStudent();
+  renderReports(); if (drawing) cancelDraw(); renderStudent();
 });
 $('#report-view').addEventListener('click', () => { const latest = state.reports.at(-1); if (latest) { filters.time = latest.targetTime; filters.period = latest.period; filters.windowName=activeWindows().includes(latest.windowName)?latest.windowName:''; applyFilters(); } setPage('student'); });
-$('#report-list').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-report]'); if (!button) return; state.reports = state.reports.filter((r) => r.id !== button.dataset.deleteReport); persist(); renderReports(); cancelSpin(); renderStudent(); toast('已删除该条本机报数。'); });
+$('#report-list').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-report]'); if (!button) return; state.reports = state.reports.filter((r) => r.id !== button.dataset.deleteReport); persist(); renderReports(); cancelDraw(); renderStudent(); toast('已删除该条本机报数。'); });
 $('#wallet-form').addEventListener('submit', (event) => {
   event.preventDefault(); const limit = Number($('#monthly-limit').value), openingSpent = Number($('#opening-spent').value);
   if (![limit,openingSpent].every((v) => Number.isFinite(v) && v >= 0 && v <= 100000)) { $('#wallet-status').textContent = '请填写 0～100000 之间的金额。'; return; }
   state.months[monthKey()] = { limit:Math.round(limit * 100) / 100, openingSpent:Math.round(openingSpent * 100) / 100 };
   const stored = persist(); renderWallet(); $('#wallet-status').textContent = stored ? '本月设置已保存。' : '设置仅暂存在当前页面。';
 });
-$('#ledger-list').addEventListener('click', (event) => { const reviewButton=event.target.closest('[data-review-meal]');if(reviewButton){community?.openReview(state.entries.find((e)=>e.id===reviewButton.dataset.reviewMeal));return;}const button = event.target.closest('[data-delete-entry]'); if (!button) return; state.entries = state.entries.filter((e) => e.id !== button.dataset.deleteEntry); persist(); renderWallet(); toast('已删除该笔本机餐费记录，已发布评价可在反馈区另行撤回。'); });
+$('#ledger-list').addEventListener('click', (event) => { const reviewButton=event.target.closest('[data-review-meal]');if(reviewButton){personalReviews?.open(reviewButton.dataset.reviewMeal);return;}const button = event.target.closest('[data-delete-entry]'); if (!button) return; state.entries = state.entries.filter((e) => e.id !== button.dataset.deleteEntry); persist(); cancelDraw(); renderStudent(); renderWallet(); toast('已删除餐费及这次个人评价。'); });
 $('#export-data').addEventListener('click', () => { const blob = new Blob([JSON.stringify({ version:1, exportedAt:new Date().toISOString(),...state },null,2)],{ type:'application/json' }); const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = `吃什么-本机备份-${monthKey()}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url),2000); });
 // 同一浏览器的另一个标签页填报时，学生页会同步；其他设备不会收到。
-window.addEventListener('storage', (event) => { if (event.key !== STORAGE_KEY || !event.newValue) return; try { const next = JSON.parse(event.newValue); if (Array.isArray(next.reports) && Array.isArray(next.entries) && next.months) { decisionUI?.stopDemo(false);state.reports=next.reports; state.entries=next.entries; state.months=next.months;state.customDishes=Array.isArray(next.customDishes)?next.customDishes:[];state.history=Array.isArray(next.history)?next.history:[];state.menuMode=['campus','demo','collected'].includes(next.menuMode)?next.menuMode:'campus';Object.assign(timing,normalizeTiming(next.decision));cancelSpin();renderCollection();renderStudent();renderReports();if(!$('#page-wallet').hidden)renderWallet(); } } catch { /* 忽略损坏的外部数据。 */ } });
-setInterval(() => { if (!spinning && !$('#choice-dialog').open) renderStudent(); if (!$('#page-staff').hidden) renderReports(); }, 30000);
+window.addEventListener('storage', (event) => { if (event.key !== STORAGE_KEY || !event.newValue) return; try { const next = JSON.parse(event.newValue); if (Array.isArray(next.reports) && Array.isArray(next.entries) && next.months) { decisionUI?.stopDemo(false);state.reports=next.reports; state.entries=next.entries; state.months=next.months;state.customDishes=Array.isArray(next.customDishes)?next.customDishes:[];state.history=Array.isArray(next.history)?next.history:[];state.menuMode=['campus','demo','collected'].includes(next.menuMode)?next.menuMode:'campus';Object.assign(timing,normalizeTiming(next.decision));cancelDraw();renderCollection();renderStudent();renderReports();if(!$('#page-wallet').hidden)renderWallet(); } } catch { /* 忽略损坏的外部数据。 */ } });
+setInterval(() => { if (!drawing && !$('#choice-dialog').open) renderStudent(); if (!$('#page-staff').hidden) renderReports(); }, 30000);
 // 真实菜单和历史样本表单。菜单模式需要主动切换，不会混入示例菜价。
 $('#report-canteen').parentElement.insertAdjacentHTML('afterend','<div class="field"><label for="report-window">窗口名（可选）</label><input id="report-window" list="window-names" maxlength="30" placeholder="不填则只作未区分窗口的参考"></div>');
 $('#report-minutes').parentElement.insertAdjacentHTML('afterend','<div class="field"><label for="report-measure">等待口径</label><select id="report-measure"><option value="queue-to-pickup">排队到拿餐（含出餐）</option><option value="queue">排队到点餐（出餐另算）</option></select></div>');
@@ -269,12 +271,12 @@ function renderCollection(){
 $('#menu-form').addEventListener('submit',(event)=>{event.preventDefault();try{
   const dish=menuDishFromInput({id:crypto.randomUUID(),windowName:$('#menu-window').value,name:$('#menu-name').value,price:$('#menu-price').value,pickupMinutes:$('#menu-pickup').value,periods:$('#menu-periods').value.split(','),taste:$('#menu-taste').value,vegetarian:$('#menu-vegetarian').checked,verified:$('#menu-verified').checked});
   const existing=state.customDishes.find((d)=>d.name===dish.name&&d.windowName===dish.windowName);if(existing)dish.id=existing.id;
-  state.customDishes=state.customDishes.filter((d)=>d.id!==dish.id);state.customDishes.push(dish);persist();$('#menu-status').textContent='已保存。选择上方“自采菜单”即可在学生页使用。';renderCollection();cancelSpin();renderStudent();
+  state.customDishes=state.customDishes.filter((d)=>d.id!==dish.id);state.customDishes.push(dish);persist();$('#menu-status').textContent='已保存。选择上方“自采菜单”即可在学生页使用。';renderCollection();cancelDraw();renderStudent();
 }catch(error){$('#menu-status').textContent=error.message;}});
 $('#menu-mode').addEventListener('change',(event)=>{state.menuMode=event.target.value;filters.windowName='';persist();renderCollection();applyFilters();toast(`已切换：${menuLabel()}`);});
 $('#history-form').addEventListener('submit',(event)=>{event.preventDefault();try{
   const raw=$('#history-time').value;const sample=historySampleFromInput({id:crypto.randomUUID(),windowName:$('#history-window').value,queuedAt:Date.parse(raw+'+08:00'),minutes:$('#history-minutes').value,measure:$('#history-measure').value});
-  state.history.push(sample);persist();$('#history-status').textContent='已保存，按平日/周末与等待口径分组。';renderCollection();cancelSpin();renderStudent();
+  state.history.push(sample);persist();$('#history-status').textContent='已保存，按平日/周末与等待口径分组。';renderCollection();cancelDraw();renderStudent();
 }catch(error){$('#history-status').textContent=error.message;}});
 $('#collected-menu-list').addEventListener('click',(event)=>{const button=event.target.closest('[data-delete-dish]');if(!button)return;state.customDishes=state.customDishes.filter((d)=>d.id!==button.dataset.deleteDish);persist();renderCollection();applyFilters();});
 $('#history-list').addEventListener('click',(event)=>{const button=event.target.closest('[data-delete-history]');if(!button)return;state.history=state.history.filter((h)=>h.id!==button.dataset.deleteHistory);persist();renderCollection();applyFilters();});
@@ -283,9 +285,10 @@ $('#history-time').value=`${localParts.year}-${localParts.month}-${localParts.da
 const aboutParagraphs=$$('#about-dialog .about-copy p');
 aboutParagraphs[0].textContent='优先使用30分钟内的适用报数；其次取近30天、同窗口、同餐段、相近时刻、同为平日或周末、同等待口径的至少3条记录的中位数。09号另有10/18周日11:30的单次实测8分钟，相近周末时刻标为“单次实测参考”。其余采用演示客流曲线与21秒/人参数。';
 aboutParagraphs[1].textContent='总用时＝去程＋排队＋出餐＋用餐＋返回。排队至取餐的实测已含出餐，不重复添加。TimeShift每隔5分钟比较出发方案，并筛掉超预算、等待超限或不能按时返回的菜品。';
-aboutParagraphs[2].textContent='时间、省钱、口味三项按当前目标加权，得到适合度s。抽取权重w＝exp(6s)，再将前8道的权重归一化为概率。扇区面积与抽取概率相同；更改目标和条件后重新计算。';
+aboutParagraphs[2].textContent='时间、省钱、口味三项按当前目标加权，得到适合度s。抽取权重w＝exp(6s)×个人评分系数：1星0.25、2星0.5、3星1、4星1.5、5星2。未评为1；同菜采用最近一次评价，修改时替换。所有符合预算和时间的菜均入卡池，权重归一化为概率。';
 aboutParagraphs[3].textContent=`照片菜单来自10/18第三食堂午间采集，共${CAMPUS_MENU.length}道。窗口菜价与排队来源分别标注。营养助手支持菜单三餐组合与DeepSeek问答；当前照片菜单还缺早餐、晚餐。`;
-aboutParagraphs[4].textContent='照片菜单与现场采集记录随网站共享。本机补录、报数和餐费保存在浏览器，可导出备份；共享讨论、反馈、评分和DeepSeek待接服务器。';
+aboutParagraphs[4].textContent='照片菜单与现场采集记录随网站共享。本机补录、报数、餐费和个人评价保存在当前浏览器，可导出备份；共享讨论、反馈、公开评价和DeepSeek待接服务器。';
+personalReviews=createPreferencesUI({getEntries:()=>state.entries,save:persist,onChange:()=>{cancelDraw();renderStudent();renderWallet();},onShare:(entry)=>community?.openReview(entry),toast});
 community=createCommunity({toast,refreshLedger:renderWallet,refreshMenu:renderStudent});
 decisionUI=createDecisionUI({getTiming:()=>timing,getFilters:()=>filters,onChange:(next,transient)=>{
   Object.assign(timing,normalizeTiming({...timing,...next}));if(!transient)persist();applyFilters();
