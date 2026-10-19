@@ -1,3 +1,4 @@
+import { dishVisual } from './dish-media.js';
 import { dailyPlan, FOOD_GROUPS, LESSONS } from './nutrition.js';
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
 const money = (value) => `¥${Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`;
@@ -49,7 +50,7 @@ export function createNutrition({ getMenu, getMenuMode, selectMeal, toast }) {
     if (plan.missing.includes('staple')) supplements.push('菜单中未识别到主食，请核对三餐是否需要补充米饭、面食等。');
     target.innerHTML = `<div class="nutrition-plan-top"><div><p class="eyebrow">今天的三餐草案</p><h3>好好吃饭，也照顾预算。</h3></div><span class="source-tag">${getMenuMode() === 'campus' ? '10/18照片菜单' : getMenuMode() === 'collected' ? '本机补录菜单' : '演示菜单'}</span></div>
       <div class="nutrition-totals"><div><small>菜单内三餐</small><strong>${money(plan.total)}</strong></div><div><small>预算尚余</small><strong>${money(plan.remaining)}</strong></div><div><small>原计划预留</small><strong>${money(plan.reserve)}</strong></div></div>
-      ${plan.meals.map((meal, index) => `<article class="nutrition-meal"><span class="nutrition-period">${periodLabels[meal.period]}</span><div class="nutrition-meal-name"><span aria-hidden="true">${escape(meal.emoji || '🍚')}</span><div><h4>${escape(meal.name)}</h4><p>${escape(meal.windowName || '窗口待确认')} · ${meal.verified ? '已采集价' : '示例价'}</p></div><strong>${money(meal.price)}</strong></div><p class="nutrition-clues">搭配线索：${meal.clues.length ? meal.clues.map(groupLabel).join('、') : '食材待录入'}。</p><button class="text-button" data-nutrition-pick="${index}">选这餐，查看排队与确认用餐 →</button></article>`).join('')}
+      ${plan.meals.map((meal, index) => `<article class="nutrition-meal"><span class="nutrition-period">${periodLabels[meal.period]}</span><div class="nutrition-meal-name"><span aria-hidden="true">${dishVisual(meal)}</span><div><h4>${escape(meal.name)}</h4><p>${escape(meal.windowName || '窗口待确认')} · ${meal.verified ? '已采集价' : '示例价'}</p></div><strong>${money(meal.price)}</strong></div><p class="nutrition-clues">搭配线索：${meal.clues.length ? meal.clues.map(groupLabel).join('、') : '食材待录入'}。</p><button class="text-button" data-nutrition-pick="${index}">选这餐，查看排队与确认用餐 →</button></article>`).join('')}
       <div class="nutrition-supplements"><h4>再补充一点，更丰富</h4><ul>${(supplements.length ? supplements : ['这组菜名已覆盖多个食物组。']).map((text) => `<li>${escape(text)}</li>`).join('')}</ul><p>补充项未计价，不计入合计。</p></div><button class="button secondary" id="nutrition-another">换一组三餐 ↻</button>`;
   }
   function generate() {

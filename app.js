@@ -1,3 +1,4 @@
+import { dishVisual } from './dish-media.js';
 import { CANTEENS, DISHES, PERIODS, estimateWait, getCandidates, monthlyBudget, budgetHint, waitHint } from './model.js';
 import { menuDishFromInput, historySampleFromInput } from './collection.js';
 import { createCommunity } from './community.js';
@@ -116,7 +117,7 @@ function renderStudent() {
   cardPool = weightedPool(candidates, candidates.length);
   $('#candidate-count').textContent = candidates.length;
   if (candidates.length) {
-    $('#candidate-list').innerHTML = candidates.map((dish) => { const rating=community?.ratingsFor(dish.id), personal=dish.personalRating, chance=cardPool.find((item)=>item.id===dish.id); return `<button class="dish-row" data-dish="${escape(dish.id)}" aria-label="选择${escape(dish.name)}，${dish.price}元，总用时${dish.elapsed}分钟"><span class="dish-emoji" aria-hidden="true">${escape(dish.emoji)}</span><span class="dish-info"><strong>${escape(dish.name)}</strong><small>${escape(dish.windowName)} · ${dish.wait.includesPickup?'等至取餐':'排队'} ${dish.wait.minutes} 分钟</small><small class="time-fit">往返用餐 ${dish.elapsed} 分钟 · ${escape(dish.wait.sourceLabel)}</small><span class="dish-rating">${validRating(personal)?`我评 ${personal} 星 · 权重 ×${dish.preferenceFactor}`:rating?`饭友 ★ ${rating.average} · ${rating.count} 条评价`:'吃完评分，影响下次抽卡'}</span></span><span class="dish-price">${money(dish.price)}<small class="dish-chance">${chance?`${chance.percent}% 入选`:'不在本轮卡池'}</small></span></button>`; }).join('');
+    $('#candidate-list').innerHTML = candidates.map((dish) => { const rating=community?.ratingsFor(dish.id), personal=dish.personalRating, chance=cardPool.find((item)=>item.id===dish.id); return `<button class="dish-row" data-dish="${escape(dish.id)}" aria-label="选择${escape(dish.name)}，${dish.price}元，总用时${dish.elapsed}分钟"><span class="dish-emoji" aria-hidden="true">${dishVisual(dish)}</span><span class="dish-info"><strong>${escape(dish.name)}</strong><small>${escape(dish.windowName)} · ${dish.wait.includesPickup?'等至取餐':'排队'} ${dish.wait.minutes} 分钟</small><small class="time-fit">往返用餐 ${dish.elapsed} 分钟 · ${escape(dish.wait.sourceLabel)}</small><span class="dish-rating">${validRating(personal)?`我评 ${personal} 星 · 权重 ×${dish.preferenceFactor}`:rating?`饭友 ★ ${rating.average} · ${rating.count} 条评价`:'吃完评分，影响下次抽卡'}</span></span><span class="dish-price">${money(dish.price)}<small class="dish-chance">${chance?`${chance.percent}% 入选`:'不在本轮卡池'}</small></span></button>`; }).join('');
   } else {
     const reason = state.menuMode==='campus'&&filters.period!=='lunch' ? '这批照片只采集了午餐。可在资料录入补充其他餐段。' : decisionSnapshot.excluded.length ? `当前最短需要 ${decisionSnapshot.minimum} 分钟，试试增加可用时间。` : wait.closed ? '换个用餐时刻试试。' : !Number.isFinite(filters.budget) || filters.budget <= 0 ? '请输入大于 0 的预算。' : '试试调整预算、等待或口味；照片菜单的口味尚待录入。';
     $('#candidate-list').innerHTML = `<div class="empty-state"><span class="empty-icon" aria-hidden="true">🥢</span><strong>这次没有合适的候选</strong><p>${reason}</p><button class="text-button" id="empty-reset">恢复默认条件 →</button></div>`;
@@ -161,7 +162,7 @@ function draw() {
     const tier = dish.personalRating >= 4 ? 'gold' : dish.personalRating && dish.personalRating <= 2 ? 'miss' : '';
     $('#card-front').className = 'card-face card-front ' + tier;
     $('#card-tier').textContent = validRating(dish.personalRating) ? ratingOutcome(dish.personalRating) + ' · 你上次的评价' : '新口味 · 等你打分';
-    $('#card-food').textContent = dish.emoji || '🍚'; $('#card-name').textContent = dish.name;
+    $('#card-food').innerHTML = dishVisual(dish); $('#card-name').textContent = dish.name;
     $('#card-window').textContent = dish.windowName; $('#card-price').textContent = money(dish.price);
     $('#card-time').textContent = '往返用餐 ' + dish.elapsed + ' 分钟';
     $('#meal-card').className = 'meal-card revealed';
@@ -172,7 +173,7 @@ function draw() {
 }
 function showChoice(dish) {
   if (!dish) return; selectedDish = dish;
-  $('#choice-emoji').textContent = dish.emoji; $('#choice-title').textContent = dish.name;
+  $('#choice-emoji').innerHTML = dishVisual(dish); $('#choice-title').textContent = dish.name;
   $('#choice-meta').textContent = `第三食堂 · ${dish.windowName || '示例窗口'} · ${dish.taste}`;
   $('#choice-price').textContent = money(dish.price);
   $('#choice-note').textContent = `${dish.wait.includesPickup?'等至取餐':'排队'} ${dish.wait.minutes} 分钟 · 往返用餐 ${dish.elapsed} 分钟 · ${dish.returnAt} 返回 · ${dish.wait.sourceLabel}${dish.verified?'':' · 示例菜价'}。确认用餐后记账。`;
@@ -201,7 +202,7 @@ function renderWallet() {
   ];
   $('#wallet-summary').innerHTML = cards.map((c) => `<div class="stat-card ${c.accent ? 'accent' : ''} ${c.over ? 'over' : ''}"><small>${c.label}</small><strong>${money(c.value)}</strong><p>${c.note}</p></div>`).join('');
   const entries = monthEntries(); $('#ledger-count').textContent = entries.length;
-  $('#ledger-list').innerHTML = entries.length ? entries.map((entry) => { const reviewed=validRating(entry.personalRating); return `<div class="ledger-row"><div class="ledger-title"><span class="dish-emoji" aria-hidden="true">${escape(entry.emoji || '🍚')}</span><div><strong>${escape(entry.name)}</strong><small>${dateLabel(entry.date, { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' })} · ${escape(entry.periodLabel || '用餐')}${entry.demo ? ' · 示例菜价记录' : ''}</small><button class="meal-review-button" data-review-meal="${escape(entry.id)}">${reviewed?`★ ${entry.personalRating}/5 · 修改评价`:'吃完了，打个分 ★'}</button>${reviewed?`<p class="personal-review-copy"><span class="meal-outcome ${entry.personalRating>=4?'gold':entry.personalRating<=2?'miss':''}">${ratingOutcome(entry.personalRating)}</span>${escape(entry.personalComment || '')}</p>`:''}</div></div><div class="row-side"><span class="ledger-amount">${money(entry.price)}</span><button class="row-delete" data-delete-entry="${escape(entry.id)}" aria-label="删除${escape(entry.name)}餐费记录">删除</button></div></div>`; }).join('') : '<div class="empty-state"><span class="empty-icon" aria-hidden="true">🍚</span><strong>第一顿，从今天开始</strong><p>在“今天吃什么”选好菜并确认，<br>就会出现在这里。</p></div>';
+  $('#ledger-list').innerHTML = entries.length ? entries.map((entry) => { const reviewed=validRating(entry.personalRating); return `<div class="ledger-row"><div class="ledger-title"><span class="dish-emoji" aria-hidden="true">${dishVisual(entry)}</span><div><strong>${escape(entry.name)}</strong><small>${dateLabel(entry.date, { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' })} · ${escape(entry.periodLabel || '用餐')}${entry.demo ? ' · 示例菜价记录' : ''}</small><button class="meal-review-button" data-review-meal="${escape(entry.id)}">${reviewed?`★ ${entry.personalRating}/5 · 修改评价`:'吃完了，打个分 ★'}</button>${reviewed?`<p class="personal-review-copy"><span class="meal-outcome ${entry.personalRating>=4?'gold':entry.personalRating<=2?'miss':''}">${ratingOutcome(entry.personalRating)}</span>${escape(entry.personalComment || '')}</p>`:''}</div></div><div class="row-side"><span class="ledger-amount">${money(entry.price)}</span><button class="row-delete" data-delete-entry="${escape(entry.id)}" aria-label="删除${escape(entry.name)}餐费记录">删除</button></div></div>`; }).join('') : '<div class="empty-state"><span class="empty-icon" aria-hidden="true">🍚</span><strong>第一顿，从今天开始</strong><p>在“今天吃什么”选好菜并确认，<br>就会出现在这里。</p></div>';
   $('#sidebar-remaining').textContent = money(stats.remaining);
 }
 
@@ -286,7 +287,7 @@ const aboutParagraphs=$$('#about-dialog .about-copy p');
 aboutParagraphs[0].textContent='优先使用30分钟内的适用报数；其次取近30天、同窗口、同餐段、相近时刻、同为平日或周末、同等待口径的至少3条记录的中位数。09号另有10/18周日11:30的单次实测8分钟，相近周末时刻标为“单次实测参考”。其余采用演示客流曲线与21秒/人参数。';
 aboutParagraphs[1].textContent='总用时＝去程＋排队＋出餐＋用餐＋返回。排队至取餐的实测已含出餐，不重复添加。TimeShift每隔5分钟比较出发方案，并筛掉超预算、等待超限或不能按时返回的菜品。';
 aboutParagraphs[2].textContent='时间、省钱、口味三项按当前目标加权，得到适合度s。抽取权重w＝exp(6s)×个人评分系数：1星0.25、2星0.5、3星1、4星1.5、5星2。未评为1；同菜采用最近一次评价，修改时替换。所有符合预算和时间的菜均入卡池，权重归一化为概率。';
-aboutParagraphs[3].textContent=`照片菜单来自10/18第三食堂午间采集，共${CAMPUS_MENU.length}道。窗口菜价与排队来源分别标注。营养助手支持菜单三餐组合与DeepSeek问答；当前照片菜单还缺早餐、晚餐。`;
+aboutParagraphs[3].textContent=`照片菜单来自10/18第三食堂午间采集，共${CAMPUS_MENU.length}道。窗口菜价与排队来源分别标注。营养助手按菜单组合生成基础搭配；当前照片菜单还缺早餐、晚餐。`;
 aboutParagraphs[4].textContent='照片菜单与现场采集记录随网站共享。本机补录、报数、餐费和个人评价保存在当前浏览器，可导出备份；共享讨论、反馈、公开评价和DeepSeek待接服务器。';
 personalReviews=createPreferencesUI({getEntries:()=>state.entries,save:persist,onChange:()=>{cancelDraw();renderStudent();renderWallet();},onShare:(entry)=>community?.openReview(entry),toast});
 community=createCommunity({toast,refreshLedger:renderWallet,refreshMenu:renderStudent});
