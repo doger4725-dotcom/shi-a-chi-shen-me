@@ -33,7 +33,8 @@ export const shiftClock = (time, delta) => clockMinutes(time) === null ? '' : cl
 
 // 演示菜单中每道菜有取餐参数；自采菜未录入时使用用户设置的默认值。
 export function attachTiming(dish, timing, delay = 0) {
-  const pickup = dish.wait.includesPickup ? 0 : Number.isFinite(dish.pickupMinutes) && dish.pickupMinutes >= 0 ? dish.pickupMinutes : timing.pickup;
+  const pickup = dish.wait.includesPickup ? 0 : Number.isFinite(dish.pickupMinutes) && dish.pickupMinutes >= 0 ? dish.pickupMinutes
+    : Number.isFinite(dish.wait.pickupMinutes) ? dish.wait.pickupMinutes : timing.pickup;
   const occupied = timing.walkOut + dish.wait.minutes + pickup + timing.eat + timing.walkBack;
   const elapsed = delay + occupied;
   return { ...dish, pickup, delay, occupied, elapsed, slack: timing.available - elapsed,
@@ -75,33 +76,37 @@ export function decisionOptions({ filters, timing: rawTiming, dishes, reports = 
   }
   const choices = [...byDish.values()].map((item) => {
     const personalRating = ratings.get(item.id)?.rating ?? null;
-    const base = fitScore(item, { budget: filters.budget, timing, objective: 'balanced' });
+    const base = fitScore(item, { budget: filters.budget, timing });
     const preference = personalRating === null ? base.components.tasteFit : timing.favorite === 'all' || item.taste === '口味待录入'
       ? (personalRating - 1) / 4 : (base.components.tasteFit + (personalRating - 1) / 4) / 2;
-    return { ...item, personalRating, planFit: base.fit + 0.2 * (preference - base.components.tasteFit) };
+    return { ...item, personalRating, preferenceFit: preference,
+      planFit: base.fit + OBJECTIVES[timing.objective].weights[2] * (preference - base.components.tasteFit) };
   });
   const compareFast = (a, b) => a.elapsed - b.elapsed || (b.personalRating ?? 3) - (a.personalRating ?? 3) || a.price - b.price || a.key.localeCompare(b.key);
   const compareCheap = (a, b) => a.price - b.price || a.elapsed - b.elapsed || (b.personalRating ?? 3) - (a.personalRating ?? 3) || a.key.localeCompare(b.key);
   const cheapest = [...choices].sort(compareCheap)[0];
   const fastest = [...choices].sort(compareFast)[0];
-  // 时间并列时选另一道同样快的菜，保留全局最短用时与最低价。
-  const distinctFast = fastest && [...choices].filter((item) => item.id !== cheapest.id && item.elapsed === fastest.elapsed).sort(compareFast)[0];
-  const fast = distinctFast || fastest;
-  const sameWinner = Boolean(fast && fast.id === cheapest.id);
-  const selected = new Set();
-  const plans = [];
-  const add = (item, kind, title, basis) => {
-    if (!item || selected.has(item.id)) return;
-    selected.add(item.id); plans.push({ ...item, kind, title, basis });
-  };
-  add(fast, 'fast', sameWinner ? '省钱又省时' : '赶时间', 'fastest');
-  add(sameWinner ? [...choices].filter((item) => !selected.has(item.id)).sort(compareCheap)[0] : cheapest,
-    'cheap', sameWinner ? '省钱备选' : '省饭钱', sameWinner ? 'cheap-alternative' : 'cheapest');
-  const balanced = choices.filter((item) => !selected.has(item.id)).sort((a, b) =>
-    b.planFit - a.planFit || Number(selected.size > 0 && plans.some((p) => p.windowName === a.windowName)) - Number(selected.size > 0 && plans.some((p) => p.windowName === b.windowName)) || compareFast(a, b))[0];
-  add(balanced, 'balanced', '综合备选', 'balanced-alternative');
+  // 目标按钮真正决定卡片内容。先按当前目标得分排名，再优先给出不同窗口。
+  const ranked = [...choices].sort((a, b) => {
+    const difference = b.planFit - a.planFit;
+    return Math.abs(difference) > 1e-9 ? difference : timing.objective === 'cheap' ? compareCheap(a, b) : compareFast(a, b);
+  });
+  const selected = [], windows = new Set();
+  for (const item of ranked) {
+    if (windows.has(item.windowName)) continue;
+    selected.push(item); windows.add(item.windowName);
+    if (selected.length === 3) break;
+  }
+  if (selected.length < 3) for (const item of ranked) {
+    if (selected.some((chosen) => chosen.id === item.id)) continue;
+    selected.push(item); if (selected.length === 3) break;
+  }
+  const lead = { fast: '省时', cheap: '省钱', balanced: '综合', taste: '口味' }[timing.objective];
+  const plans = selected.map((item, index) => ({ ...item, kind: `option-${index + 1}`,
+    title: `${lead}${index === 0 ? '首选' : `备选 ${index + 1}`}`, rank: index + 1,
+    objective: timing.objective, isFastest: item.elapsed === fastest.elapsed, isCheapest: item.price === cheapest.price }));
   return { timing, current, excluded, plans, choiceCount: choices.length,
-    fastestMinutes: fastest?.elapsed ?? null, cheapestPrice: cheapest?.price ?? null, sameWinner,
+    fastestMinutes: fastest?.elapsed ?? null, cheapestPrice: cheapest?.price ?? null,
     fastestCount: fastest ? choices.filter((item) => item.elapsed === fastest.elapsed).length : 0,
     departure: clockLabel(departure), deadline: clockLabel(departure + timing.available),
     minimum: immediate.length ? Math.min(...immediate.map((item) => item.elapsed)) : null };

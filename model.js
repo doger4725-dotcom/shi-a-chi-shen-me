@@ -1,8 +1,7 @@
 /**
  * “是啊，吃什么”演示数据和计算方法。
  * 用户确认场景为安徽大学龙河校区第三食堂。
- * 菜品、窗口、价格、营业时段与客流参数目前均为自拟示例，待实地采集核实。
- * 本文件没有网络请求，模型估计不应被称为实时排队数据。
+ * DISHES是演示菜单；现场菜价在canteen-data.js。窗口等待和出餐参数是演示估计。
  */
 
 export const PERIODS = Object.freeze({
@@ -60,6 +59,29 @@ const MEAL_WINDOWS = Object.freeze({
   dinner: { start: 990, end: 1200, peak: 1090, spread: 43 },
 });
 const MINUTE_MS = 60_000;
+
+// 建模初值：低峰排队 + 高峰增量 × 时段系数；单位均为分钟。
+// 套餐打饭较快，煎饼/炒饭现做较慢。真实报数和同类实测优先覆盖这些初值。
+export const WINDOW_TIMING = Object.freeze([
+  ['01号·山东杂粮煎饼', 2, 18, 3],
+  ['02号·套餐饭', 1, 4, 1],
+  ['03号·套餐饭', 1, 7, 1],
+  ['04号·猛火炒饭', 2, 12, 4],
+  ['酸菜肉煲·馄饨', 1, 8, 3],
+  ['06号·馄饨', 1, 7, 4],
+  ['07号·牛粉面', 1, 10, 3],
+  ['08号·俏阿春拌面', 1, 8, 3],
+  ['09号·卫孔记面馆', 2, 7, 2],
+].map(([windowName, offPeak, peakExtra, pickupMinutes]) => Object.freeze({ windowName, offPeak, peakExtra, pickupMinutes })));
+
+export function tasteProfile(dish) {
+  if (['清淡', '微辣', '香辣'].includes(dish.taste)) return { taste: dish.taste, tasteSource: dish.tasteSource || '录入口味' };
+  const name = dish.name || '';
+  const taste = /爆辣|爆椒|火鸡|剁椒|老干妈|辣椒/.test(name) ? '香辣'
+    : /酸辣|椒麻|藤椒|鱼香|宫保|孜然|口水鸡|烧椒|酸豆角/.test(name) ? '微辣'
+    : /馄饨|煎饼|清香|西红柿|番茄|葱油|清笋|荠菜|玉米|鸡蛋炒饭|盐水鸭/.test(name) ? '清淡' : '口味待录入';
+  return { taste, tasteSource: taste === '口味待录入' ? '' : '按菜名推断' };
+}
 
 function timeToMinutes(time) {
   if (typeof time !== 'string' || !/^\d{2}:\d{2}$/.test(time)) return null;
@@ -164,6 +186,15 @@ export function estimateWait({ canteenId, time = '12:10', windowName = '', repor
   const window = MEAL_WINDOWS[period];
   // 高峰越近，估计队伍越长；这个钟形曲线是演示假设，尚未经真实客流校准。
   const peakLoad = Math.exp(-0.5 * ((selectedMinutes - window.peak) / window.spread) ** 2);
+  const profile = WINDOW_TIMING.find((item) => item.windowName === windowName);
+  if (profile) {
+    const minutes = Math.ceil(profile.offPeak + profile.peakExtra * peakLoad);
+    const margin = Math.max(2, Math.round(minutes * 0.3));
+    return { minutes, low: Math.max(0, minutes - margin), high: minutes + margin,
+      source: 'model', sourceLabel: '窗口模型估算', updatedAt: null, confidence: '参数初值',
+      pickupMinutes: profile.pickupMinutes, includesPickup: false,
+      detail: `排队≈${profile.offPeak}+${profile.peakExtra}×时段系数${peakLoad.toFixed(2)}，向上取整；出餐约${profile.pickupMinutes}分钟。参数初值见TimeShift“窗口估算参数”。`, closed: false };
+  }
   const peopleAhead = Math.round(3 + 34 * peakLoad);
   const minutes = Math.ceil(peopleAhead * canteen.baseServiceSeconds / 60);
   const margin = Math.max(2, Math.round(minutes * 0.3));
@@ -189,7 +220,7 @@ export function getCandidates({ budget = 20, canteenId = 'all', period = 'lunch'
     return waits.get(key);
   };
 
-  return (Array.isArray(dishes) ? dishes : []).filter((dish) => {
+  return (Array.isArray(dishes) ? dishes : []).map((dish) => dish && ({ ...dish, ...tasteProfile(dish) })).filter((dish) => {
     if (!dish || !Array.isArray(dish.periods) || !Number.isFinite(dish.price) || dish.price < 0) return false;
     const wait = waitFor(dish);
     return wait && dish.price <= budgetNumber

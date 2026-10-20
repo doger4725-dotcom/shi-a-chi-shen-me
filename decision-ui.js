@@ -1,8 +1,8 @@
 import { dishVisual } from './dish-media.js';
 import { OBJECTIVES, shiftClock } from './decision.js';
+import { WINDOW_TIMING } from './model.js';
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
 const money = (n) => `¥${Number(n).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`;
-const colors = ['#eeb298', '#cbd8a2', '#efd28b', '#a9cbb6', '#dca79e', '#ddd0a9', '#b5c894', '#d8b9a4'];
 
 export function createDecisionUI({ getTiming, getFilters, onChange, onDeparture, onNow, onPick }) {
   const $ = (query) => document.querySelector(query);
@@ -17,6 +17,7 @@ export function createDecisionUI({ getTiming, getFilters, onChange, onDeparture,
     </section>`);
   $('#ts-departure').insertAdjacentHTML('afterend', '<button class="text-button ts-now" id="ts-now" type="button" aria-pressed="false">现在出发 ↗</button>');
   $('#ts-plans').insertAdjacentHTML('beforebegin', '<p id="ts-comparison" class="ts-comparison" role="status"></p>');
+  $('#ts-plans').insertAdjacentHTML('beforebegin', `<p id="ts-strategy" class="ts-strategy"></p><details class="ts-assumptions"><summary>窗口估算参数 · 分钟</summary><p>排队＝低峰排队＋高峰增量×时段系数，向上取整。午餐系数以12:05为峰值，越接近高峰越大。近期报数和同类实测优先采用。</p><div class="ts-assumption-table"><table><thead><tr><th>窗口</th><th>低峰排队</th><th>高峰增量</th><th>出餐</th></tr></thead><tbody>${WINDOW_TIMING.map((row) => `<tr><th scope="row">${escape(row.windowName)}</th><td>${row.offPeak}</td><td>${row.peakExtra}</td><td>${row.pickupMinutes}</td></tr>`).join('')}</tbody></table></div><p>以上为模型初值；去程4分钟、用餐12分钟、返回4分钟可在“用时设置”调整。未录入的窗口使用默认出餐设置。口味可按菜名推断，标注在卡片中。</p></details>`);
   $('#draw-result').insertAdjacentHTML('afterend', '<details class="draw-probabilities"><summary id="card-probabilities-summary">查看本轮概率</summary><p>最终概率＝当前权重 ÷ 卡池总权重。系数调整权重，再统一计算概率。</p><div class="probability-list" id="card-probabilities"></div></details>');
 
   function stopDemo(restore = true) {
@@ -57,19 +58,17 @@ export function createDecisionUI({ getTiming, getFilters, onChange, onDeparture,
     $('#ts-now').setAttribute('aria-pressed', String(timing.liveStart));
     $('#ts-departure').readOnly = timing.liveStart;
     $('#ts-data-label').textContent = timing.liveStart ? '当前时间 · 每30秒重算' : '计划时间 · 按适用报数和历史记录重算';
-    $('#ts-comparison').textContent = result.plans.length ? `预算 ${money(filters.budget)} · ${timing.enabled ? `最多 ${timing.available} 分钟` : '不限总用时'} · ${result.choiceCount} 道可选，列出 ${result.plans.length} 道不同菜品${result.sameWinner ? '；首选同时最快、最省钱' : ''}` : '';
-    const fast = result.plans.find((item) => item.kind === 'fast'), cheap = result.plans.find((item) => item.kind === 'cheap');
+    $('#ts-comparison').textContent = result.plans.length ? `预算 ${money(filters.budget)} · ${timing.enabled ? `最多 ${timing.available} 分钟` : '不限总用时'} · ${result.choiceCount} 道可选 · ${OBJECTIVES[timing.objective].label}` : '';
+    const weights = OBJECTIVES[timing.objective].weights.map((value) => Math.round(value * 100));
+    $('#ts-strategy').textContent = `时间 ${weights[0]}% · 价格 ${weights[1]}% · 偏好 ${weights[2]}% · 按当前目标重选，优先比较不同窗口${timing.objective === 'taste' && timing.favorite === 'all' ? '；选一个偏爱口味，推荐更具体' : ''}`;
+    const first = result.plans[0];
     $('#ts-plans').innerHTML = result.plans.length ? result.plans.map((item) => {
-      const timeDifference = fast ? item.elapsed - fast.elapsed : 0;
-      const costDifference = cheap ? item.price - cheap.price : 0;
-      let reason = item.basis === 'fastest'
-        ? result.sameWinner ? '当前最低价，也能最早返回。' : result.fastestCount > 1 ? `最快用时 ${item.elapsed} 分钟，${result.fastestCount} 道菜并列；这张提供另一道选择。` : `比省钱方案早 ${Math.max(0, (cheap?.elapsed ?? item.elapsed) - item.elapsed)} 分钟返回。`
-        : item.basis === 'cheapest' ? `当前最低价，比赶时间方案省 ${money(Math.max(0, fast.price - item.price))}。`
-        : item.basis === 'cheap-alternative' ? `换一道菜，多花 ${money(item.price - result.cheapestPrice)}${timeDifference > 0 ? `，多用 ${timeDifference} 分钟` : '，用时相同'}。`
-        : `在另外的菜中比较时间、价格和偏好${item.personalRating ? `；你曾评 ${item.personalRating} 星` : timing.favorite !== 'all' && timing.favorite === item.taste ? `；符合${item.taste}口味` : ''}。`;
-      const comparison = item.kind === 'balanced' && cheap ? `较省钱方案${Math.abs(costDifference) < 0.001 ? '价格相同' : costDifference > 0 ? `多 ${money(costDifference)}` : `省 ${money(-costDifference)}`}，${timeDifference === 0 ? '与赶时间方案同样快' : `比赶时间方案多 ${timeDifference} 分钟`}` : '';
+      const timeDifference = item.elapsed - first.elapsed, costDifference = item.price - first.price;
+      const comparison = item.rank > 1 ? `比首选${Math.abs(costDifference) < 0.001 ? '价格相同' : costDifference > 0 ? `多花 ${money(costDifference)}` : `省 ${money(-costDifference)}`}，${timeDifference === 0 ? '用时相同' : timeDifference > 0 ? `多用 ${timeDifference} 分钟` : `快 ${-timeDifference} 分钟`}` : '';
+      const preference = item.personalRating ? `你评过 ${item.personalRating} 星` : timing.favorite !== 'all' && item.taste === timing.favorite ? `符合${item.taste}口味` : '';
+      const reason = `${item.isFastest ? '本轮最快 · ' : ''}${item.isCheapest ? '本轮最低价 · ' : ''}目标得分 ${(item.planFit * 100).toFixed(1)}${preference ? ` · ${preference}` : ''}`;
       const parts = [...(item.delay ? [['出发前', item.delay, 'delay']] : []), ...['步行', item.wait.includesPickup?'等至取餐':'排队', '出餐', '用餐', '返回'].map((label, i) => [label, item.breakdown[i], `part-${i}`])].filter(([,value])=>value>0);
-      return `<article class="ts-plan ${item.kind}"><div class="ts-plan-heading"><span>${escape(item.title)}</span><small>${item.delay ? `${item.delay} 分钟后出发` : '按选定时刻出发'}</small></div><h3>${dishVisual(item)} ${escape(item.name)}</h3><p class="ts-window">${escape(item.windowName)}</p><div class="ts-plan-numbers"><strong>${item.elapsed}<small> 分钟</small></strong><span>${money(item.price)}</span></div><p class="ts-return">${item.departure} → ${item.returnAt} 返回${timing.enabled ? ` · 余 ${item.slack} 分钟` : ''} · 预算余 ${money(filters.budget - item.price)}</p><div class="ts-timeline" aria-hidden="true">${parts.map(([label, value, className]) => `<span class="${className}" style="flex:${value}" title="${label}${value}分钟"></span>`).join('')}</div><p class="ts-breakdown">${parts.map(([label, value]) => `${label}${value}`).join(' · ')}</p><p class="ts-source">等待：${escape(item.wait.sourceLabel)}${item.wait.updatedAt ? ` · ${new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(item.wait.updatedAt))}` : ''}</p><p class="ts-reason">${reason}${comparison ? `<small>${comparison}</small>` : ''}</p><button class="text-button" data-ts-plan="${item.kind}">就选${escape(item.title)} →</button></article>`;
+      return `<article class="ts-plan ${item.kind}"><div class="ts-plan-heading"><span>${escape(item.title)}</span><small>${item.delay ? `${item.delay} 分钟后出发` : '按选定时刻出发'}</small></div><h3>${dishVisual(item)} ${escape(item.name)}</h3><p class="ts-window">${escape(item.windowName)}${item.tasteSource === '按菜名推断' ? ` · ${escape(item.taste)}（菜名推断）` : ''}</p><div class="ts-plan-numbers"><strong>${item.elapsed}<small> 分钟</small></strong><span>${money(item.price)}</span></div><p class="ts-return">${item.departure} → ${item.returnAt} 返回${timing.enabled ? ` · 余 ${item.slack} 分钟` : ''} · 预算余 ${money(filters.budget - item.price)}</p><div class="ts-timeline" aria-hidden="true">${parts.map(([label, value, className]) => `<span class="${className}" style="flex:${value}" title="${label}${value}分钟"></span>`).join('')}</div><p class="ts-breakdown">${parts.map(([label, value]) => `${label}${value}`).join(' · ')}</p><p class="ts-source">等待：${escape(item.wait.sourceLabel)}${item.wait.updatedAt ? ` · ${new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(item.wait.updatedAt))}` : ''}</p><p class="ts-reason">${reason}${comparison ? `<small>${comparison}</small>` : ''}</p><button class="text-button" data-ts-plan="${item.kind}">就选${escape(item.title)} →</button></article>`;
     }).join('') : `<div class="ts-empty"><strong>${result.minimum ? `最短需要 ${result.minimum} 分钟` : '暂时没有合适方案'}</strong><p>${result.minimum ? `当前有 ${timing.available} 分钟，增加用时或调整出发时刻。` : '试试换个时刻、窗口或筛选条件。'}</p></div>`;
     $('#ts-excluded').innerHTML = result.excluded.length ? `<details class="ts-excluded"><summary>${result.excluded.length} 道菜超时，已移出卡池</summary><div>${result.excluded.map((item) => `<p><span>${escape(item.name)}</span><strong>${item.elapsed} 分钟 <small>超出 ${-item.slack} 分钟</small></strong></p>`).join('')}</div></details>` : '';
     $('#ts-status').textContent = timer ? `时间变化演示 · 可用 ${timing.available} 分钟 · 当前 ${pool.length} 道入池` : `${OBJECTIVES[timing.objective].label} · 当前 ${pool.length} 道入池${timing.favorite !== 'all' ? ` · 偏爱${timing.favorite}` : ''}`;

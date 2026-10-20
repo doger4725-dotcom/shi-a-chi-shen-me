@@ -115,7 +115,7 @@ function renderStudent() {
   $('#queue-time-label').textContent = `计划 ${filters.time || '--:--'} 到达${wait.summary?' · 最长参考':''}`;
   $('#queue-source').textContent = wait.sourceLabel;
   $('#queue-source').classList.toggle('staff', wait.source === 'staff');
-  $('#queue-detail').textContent = wait.closed ? '餐段设置：06:30–09:30 / 10:30–14:00 / 16:30–20:00' : wait.summary ? '每道菜按所属窗口计算；来源见方案' : wait.source === 'staff' ? `${dateLabel(wait.updatedAt, { hour: '2-digit', minute: '2-digit' })} 人工报数 · 有效30分钟` : wait.source==='history' ? `${wait.sampleCount} 条同类日期实测 · 中位数` : wait.source==='observation' ? '1条实测 · 周末相近时刻参考 · 已含出餐' : '演示时段曲线 × 21秒/人';
+  $('#queue-detail').textContent = wait.closed ? '餐段设置：06:30–09:30 / 10:30–14:00 / 16:30–20:00' : wait.summary ? '各窗口独立估算，来源和参数见方案' : wait.source === 'staff' ? `${dateLabel(wait.updatedAt, { hour: '2-digit', minute: '2-digit' })} 人工报数 · 有效30分钟` : wait.source==='history' ? `${wait.sampleCount} 条同类日期实测 · 中位数` : wait.source==='observation' ? '1条实测 · 周末相近时刻参考 · 已含出餐' : wait.pickupMinutes !== undefined ? `窗口参数 × 时段系数 · 出餐约${wait.pickupMinutes}分钟` : '演示时段曲线 × 21秒/人';
   $('#queue-detail').title = wait.detail;
   renderTimeBars();
   decisionSnapshot = decisionOptions({ filters, timing, reports: state.reports, history: state.history, observations:observations(), entries: state.entries, dishes: activeMenu() });
@@ -126,7 +126,7 @@ function renderStudent() {
   if (candidates.length) {
     $('#candidate-list').innerHTML = candidates.map((dish) => { const rating=community?.ratingsFor(dish.id), personal=dish.personalRating, chance=cardPool.find((item)=>item.id===dish.id); return `<button class="dish-row" data-dish="${escape(dish.id)}" aria-label="选择${escape(dish.name)}，${dish.price}元，总用时${dish.elapsed}分钟"><span class="dish-emoji" aria-hidden="true">${dishVisual(dish)}</span><span class="dish-info"><strong>${escape(dish.name)}</strong><small>${escape(dish.windowName)} · ${dish.wait.includesPickup?'等至取餐':'排队'} ${dish.wait.minutes} 分钟</small><small class="time-fit">往返用餐 ${dish.elapsed} 分钟 · ${escape(dish.wait.sourceLabel)}</small><span class="dish-rating">${validRating(personal)?`我评 ${personal} 星 · 权重 ×${dish.preferenceFactor}`:rating?`饭友 ★ ${rating.average} · ${rating.count} 条评价`:'吃完评分，影响下次抽卡'}</span></span><span class="dish-price">${money(dish.price)}<small class="dish-chance">${chance?`${chance.percent}% 入选`:'不在本轮卡池'}</small></span></button>`; }).join('');
   } else {
-    const reason = state.menuMode==='campus'&&filters.period!=='lunch' ? '这批照片只采集了午餐。可在资料录入补充其他餐段。' : decisionSnapshot.excluded.length ? `当前最短需要 ${decisionSnapshot.minimum} 分钟，试试增加可用时间。` : wait.closed ? '换个用餐时刻试试。' : !Number.isFinite(filters.budget) || filters.budget <= 0 ? '请输入大于 0 的预算。' : '试试调整预算、等待或口味；照片菜单的口味尚待录入。';
+    const reason = state.menuMode==='campus'&&filters.period!=='lunch' ? '这批照片只采集了午餐。可在资料录入补充其他餐段。' : decisionSnapshot.excluded.length ? `当前最短需要 ${decisionSnapshot.minimum} 分钟，试试增加可用时间。` : wait.closed ? '换个用餐时刻试试。' : !Number.isFinite(filters.budget) || filters.budget <= 0 ? '请输入大于 0 的预算。' : '试试调整预算、等待或口味。';
     $('#candidate-list').innerHTML = `<div class="empty-state"><span class="empty-icon" aria-hidden="true">🥢</span><strong>这次没有合适的候选</strong><p>${reason}</p><button class="text-button" id="empty-reset">恢复默认条件 →</button></div>`;
   }
   if (!drawing) { $('#draw-button').disabled = cardPool.length === 0; renderCard(); }
@@ -141,7 +141,7 @@ function queueFor(time) {
   const windows = filters.windowName ? [filters.windowName] : [...new Set(activeMenu().filter((d)=>d.periods.includes(filters.period)).map((d)=>d.windowName))].filter(Boolean);
   const estimates=(windows.length?windows:['']).map((windowName)=>estimateWait({canteenId:filters.canteenId,windowName,time,reports:state.reports,history:state.history,observations:observations()}));
   const longest=estimates.reduce((a,b)=>a.minutes>=b.minutes?a:b);
-  return estimates.length>1 ? {...longest,summary:true,sourceLabel:estimates.some((e)=>e.source==='model')?'窗口汇总 · 含演示':'各窗口参考汇总',low:Math.min(...estimates.map((e)=>e.minutes)),high:Math.max(...estimates.map((e)=>e.minutes))} : longest;
+  return estimates.length>1 ? {...longest,summary:true,sourceLabel:estimates.some((e)=>e.source==='model')?'窗口汇总 · 含模型估算':'各窗口参考汇总',low:Math.min(...estimates.map((e)=>e.minutes)),high:Math.max(...estimates.map((e)=>e.minutes))} : longest;
 }
 function renderTimeBars() {
   const slots = { breakfast: ['07:10','07:30','07:50','08:10','08:30'], lunch: ['11:20','11:45','12:10','12:35','13:00'], dinner: ['17:20','17:45','18:10','18:35','19:00'] }[filters.period].slice();
@@ -291,11 +291,11 @@ $('#history-list').addEventListener('click',(event)=>{const button=event.target.
 const localParts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date()).filter((p)=>p.type!=='literal').map((p)=>[p.type,p.value]));
 $('#history-time').value=`${localParts.year}-${localParts.month}-${localParts.day}T${localParts.hour}:${localParts.minute}`;
 const aboutParagraphs=$$('#about-dialog .about-copy p');
-aboutParagraphs[0].textContent='优先使用30分钟内的适用报数；其次取近30天、同窗口、同餐段、相近时刻、同为平日或周末、同等待口径的至少3条记录的中位数。09号另有10/18周日11:30的单次实测8分钟，相近周末时刻标为“单次实测参考”。其余采用演示客流曲线与21秒/人参数。';
-aboutParagraphs[1].textContent='总用时＝去程＋排队＋出餐＋用餐＋返回。已含出餐的记录不重复计时。TimeShift每隔5分钟比较出发安排，筛掉超预算、等待超限或不能按时返回的菜品，列出不同菜品的赶时间、省饭钱和综合备选。综合得分按时间0.45、价格0.35、偏好0.20计算。“现在出发”每30秒按当前时间重算。';
+aboutParagraphs[0].textContent='优先使用30分钟内的适用报数；其次取近30天同窗口、同餐段、同日期类型和同计时口径的至少3条记录中位数。09号另有10/18周日11:30的8分钟实测参考。无适用数据时，采用每个窗口的低峰排队、高峰增量与出餐初值，参数在TimeShift中可查看。';
+aboutParagraphs[1].textContent='总用时＝去程＋排队＋出餐＋用餐＋返回，已含出餐的记录不重复计时。每5分钟比较出发安排，筛除超预算、等待超限或不能按时返回的菜品。按选中目标加权时间、价格和偏好，重新选出三道菜，优先比较不同窗口；候选不足时显示实际数量。“现在出发”每30秒重算。';
 aboutParagraphs[2].textContent='时间、省钱、口味三项按当前目标加权，得到适合度s。抽取权重w＝exp(6s)×个人评分系数：1星0.25、2星0.5、3星1、4星1.5、5星2。未评为1；同菜采用最近一次评价，修改时替换。所有符合预算和时间的菜均入卡池，权重归一化为概率。';
-aboutParagraphs[3].textContent=`照片菜单来自10/18第三食堂午间采集，共${CAMPUS_MENU.length}道。窗口菜价与排队来源分别标注。营养助手按菜单组合生成基础搭配；当前照片菜单还缺早餐、晚餐。`;
-aboutParagraphs[4].textContent='照片菜单与现场采集记录随网站共享。本机补录、报数、餐费和个人评价保存在当前浏览器，可导出备份。“想吃什么”问卷可保存、修改并导出CSV和JSON，交给项目组汇总。共享讨论、反馈、公开评价和DeepSeek待接服务器。';
+aboutParagraphs[3].textContent=`照片菜单来自10/18第三食堂午间采集，共${CAMPUS_MENU.length}道。菜价与等待来源分别标注；部分口味按菜名推断。营养助手按菜单组合生成基础搭配；早餐、晚餐待补。`;
+aboutParagraphs[4].textContent='照片菜单与现场采集记录随网站共享。本机补录、报数、餐费和个人评价保存在当前浏览器，可导出备份。“菜品问卷”可保存、修改并导出CSV和JSON，交给项目组汇总。共享讨论、反馈、公开评价和DeepSeek待接服务器。';
 personalReviews=createPreferencesUI({getEntries:()=>state.entries,save:persist,onChange:()=>{cancelDraw();renderStudent();renderWallet();},onShare:(entry)=>community?.openReview(entry),toast});
 community=createCommunity({toast,refreshLedger:renderWallet,refreshMenu:renderStudent});
 createSurvey({toast});
