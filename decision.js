@@ -1,4 +1,5 @@
 import { getCandidates } from './model.js';
+import { latestRatings } from './preferences.js';
 
 export const OBJECTIVES = Object.freeze({
   fast: { label: '时间优先', weights: [0.75, 0.15, 0.1] },
@@ -6,7 +7,7 @@ export const OBJECTIVES = Object.freeze({
   balanced: { label: '综合优先', weights: [0.45, 0.35, 0.2] },
   taste: { label: '口味优先', weights: [0.2, 0.2, 0.6] },
 });
-export const DEFAULT_TIMING = Object.freeze({ enabled: true, available: 45, walkOut: 4, walkBack: 4, eat: 12, pickup: 2, lookAhead: 15, objective: 'balanced', favorite: 'all' });
+export const DEFAULT_TIMING = Object.freeze({ enabled: true, liveStart: false, available: 45, walkOut: 4, walkBack: 4, eat: 12, pickup: 2, lookAhead: 15, objective: 'balanced', favorite: 'all' });
 const clamp = (n, low, high) => Math.max(low, Math.min(high, n));
 export function normalizeTiming(input = {}) {
   input = input || {};
@@ -15,6 +16,7 @@ export function normalizeTiming(input = {}) {
     if (Number.isFinite(Number(input[key]))) result[key] = clamp(Math.round(Number(input[key])), low, high);
   }
   if (typeof input.enabled === 'boolean') result.enabled = input.enabled;
+  if (typeof input.liveStart === 'boolean') result.liveStart = input.liveStart;
   if (Object.hasOwn(OBJECTIVES, input.objective)) result.objective = input.objective;
   if (['all', '清淡', '微辣', '香辣'].includes(input.favorite)) result.favorite = input.favorite;
   return result;
@@ -47,7 +49,7 @@ export function fitScore(dish, { budget, timing, objective = timing.objective })
 }
 
 /** 在可选的到达时刻上逐一计算，再比较目标；不是动态规划。 */
-export function decisionOptions({ filters, timing: rawTiming, dishes, reports = [], history = [], observations = [], now = Date.now() }) {
+export function decisionOptions({ filters, timing: rawTiming, dishes, reports = [], history = [], observations = [], entries = [], now = Date.now() }) {
   const timing = normalizeTiming(rawTiming), arrival = clockMinutes(filters.time);
   if (arrival === null) return { timing, current: [], excluded: [], plans: [], departure: '', deadline: '', minimum: null };
   const departure = arrival - timing.walkOut;
@@ -65,11 +67,44 @@ export function decisionOptions({ filters, timing: rawTiming, dishes, reports = 
   }
   const current = immediate.filter((item) => !timing.enabled || item.slack >= 0).sort((a, b) => b.fitData.fit - a.fitData.fit || a.price - b.price || a.elapsed - b.elapsed || a.id.localeCompare(b.id));
   const excluded = immediate.filter((item) => timing.enabled && item.slack < 0).sort((a, b) => a.elapsed - b.elapsed);
-  const fastest = [...all].sort((a, b) => a.elapsed - b.elapsed || a.price - b.price || a.key.localeCompare(b.key))[0];
-  const cheapest = [...all].sort((a, b) => a.price - b.price || a.elapsed - b.elapsed || a.key.localeCompare(b.key))[0];
-  const balanced = [...all].sort((a, b) => fitScore(b, { budget: filters.budget, timing, objective: 'balanced' }).fit - fitScore(a, { budget: filters.budget, timing, objective: 'balanced' }).fit || a.elapsed - b.elapsed || a.price - b.price)[0];
-  const plans = [['fast', fastest], ['cheap', cheapest], ['balanced', balanced]].filter(([, item]) => item).map(([kind, item]) => ({ ...item, kind }));
-  return { timing, current, excluded, plans, departure: clockLabel(departure), deadline: clockLabel(departure + timing.available), minimum: immediate.length ? Math.min(...immediate.map((item) => item.elapsed)) : null };
+  // 同一道菜的多个出发时刻只保留最早返回的一项，再从不同菜中组织方案。
+  const byDish = new Map(), ratings = latestRatings(entries);
+  for (const item of all) {
+    const previous = byDish.get(item.id);
+    if (!previous || item.elapsed < previous.elapsed || (item.elapsed === previous.elapsed && item.delay < previous.delay)) byDish.set(item.id, item);
+  }
+  const choices = [...byDish.values()].map((item) => {
+    const personalRating = ratings.get(item.id)?.rating ?? null;
+    const base = fitScore(item, { budget: filters.budget, timing, objective: 'balanced' });
+    const preference = personalRating === null ? base.components.tasteFit : timing.favorite === 'all' || item.taste === '口味待录入'
+      ? (personalRating - 1) / 4 : (base.components.tasteFit + (personalRating - 1) / 4) / 2;
+    return { ...item, personalRating, planFit: base.fit + 0.2 * (preference - base.components.tasteFit) };
+  });
+  const compareFast = (a, b) => a.elapsed - b.elapsed || (b.personalRating ?? 3) - (a.personalRating ?? 3) || a.price - b.price || a.key.localeCompare(b.key);
+  const compareCheap = (a, b) => a.price - b.price || a.elapsed - b.elapsed || (b.personalRating ?? 3) - (a.personalRating ?? 3) || a.key.localeCompare(b.key);
+  const cheapest = [...choices].sort(compareCheap)[0];
+  const fastest = [...choices].sort(compareFast)[0];
+  // 时间并列时选另一道同样快的菜，保留全局最短用时与最低价。
+  const distinctFast = fastest && [...choices].filter((item) => item.id !== cheapest.id && item.elapsed === fastest.elapsed).sort(compareFast)[0];
+  const fast = distinctFast || fastest;
+  const sameWinner = Boolean(fast && fast.id === cheapest.id);
+  const selected = new Set();
+  const plans = [];
+  const add = (item, kind, title, basis) => {
+    if (!item || selected.has(item.id)) return;
+    selected.add(item.id); plans.push({ ...item, kind, title, basis });
+  };
+  add(fast, 'fast', sameWinner ? '省钱又省时' : '赶时间', 'fastest');
+  add(sameWinner ? [...choices].filter((item) => !selected.has(item.id)).sort(compareCheap)[0] : cheapest,
+    'cheap', sameWinner ? '省钱备选' : '省饭钱', sameWinner ? 'cheap-alternative' : 'cheapest');
+  const balanced = choices.filter((item) => !selected.has(item.id)).sort((a, b) =>
+    b.planFit - a.planFit || Number(selected.size > 0 && plans.some((p) => p.windowName === a.windowName)) - Number(selected.size > 0 && plans.some((p) => p.windowName === b.windowName)) || compareFast(a, b))[0];
+  add(balanced, 'balanced', '综合备选', 'balanced-alternative');
+  return { timing, current, excluded, plans, choiceCount: choices.length,
+    fastestMinutes: fastest?.elapsed ?? null, cheapestPrice: cheapest?.price ?? null, sameWinner,
+    fastestCount: fastest ? choices.filter((item) => item.elapsed === fastest.elapsed).length : 0,
+    departure: clockLabel(departure), deadline: clockLabel(departure + timing.available),
+    minimum: immediate.length ? Math.min(...immediate.map((item) => item.elapsed)) : null };
 }
 
 /** 权重归一化；百分比使用最大余数法，显示值合计始终为100%。 */

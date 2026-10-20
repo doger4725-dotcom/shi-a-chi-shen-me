@@ -7,6 +7,7 @@ import { normalizeTiming, decisionOptions, weightedPool, chooseWeighted, shiftCl
 import { personalizeCandidates, validRating, ratingOutcome } from './preferences.js';
 import { createPreferencesUI } from './preferences-ui.js';
 import { createDecisionUI } from './decision-ui.js';
+import { createSurvey } from './survey.js';
 import { CAMPUS_MENU, CAMPUS_OBSERVATIONS, CAMPUS_EXTRAS, CAMPUS_PENDING } from './canteen-data.js';
 
 // 页面只负责收集输入和显示结果；筛选、排队与预算公式都在 model.js。
@@ -57,7 +58,7 @@ function toast(message) {
   toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 4200);
 }
 function setPage(page, updateHash = true) {
-  if (!['student', 'staff', 'wallet', 'data', 'discussion', 'feedback'].includes(page)) page = 'student';
+  if (!['student', 'staff', 'wallet', 'data', 'discussion', 'feedback', 'survey'].includes(page)) page = 'student';
   if (drawing) cancelDraw();
   if (page !== 'student') decisionUI?.stopDemo();
   $$('.page').forEach((element) => { element.hidden = element.id !== `page-${page}`; });
@@ -97,6 +98,12 @@ function applyFilters() {
 }
 function renderStudent() {
   if (drawing) cancelDraw();
+  if (timing.liveStart) {
+    const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
+    filters.time = shiftClock(clock, timing.walkOut);
+    const period = inferPeriod(filters.time); if (period) filters.period = period;
+    syncFilterControls();
+  }
   $('#budget-help').textContent=budgetHint(filters.budget,filters.period);
   $('#wait-help').textContent=waitHint(filters.maxWait);
   $('#page-student .demo-notice p').textContent=state.menuMode==='campus'?`10/18现场采集 · ${CAMPUS_MENU.length}道午餐 · 09号11:30排队至取餐8分钟（周日）`:menuLabel();
@@ -111,7 +118,7 @@ function renderStudent() {
   $('#queue-detail').textContent = wait.closed ? '餐段设置：06:30–09:30 / 10:30–14:00 / 16:30–20:00' : wait.summary ? '每道菜按所属窗口计算；来源见方案' : wait.source === 'staff' ? `${dateLabel(wait.updatedAt, { hour: '2-digit', minute: '2-digit' })} 人工报数 · 有效30分钟` : wait.source==='history' ? `${wait.sampleCount} 条同类日期实测 · 中位数` : wait.source==='observation' ? '1条实测 · 周末相近时刻参考 · 已含出餐' : '演示时段曲线 × 21秒/人';
   $('#queue-detail').title = wait.detail;
   renderTimeBars();
-  decisionSnapshot = decisionOptions({ filters, timing, reports: state.reports, history: state.history, observations:observations(), dishes: activeMenu() });
+  decisionSnapshot = decisionOptions({ filters, timing, reports: state.reports, history: state.history, observations:observations(), entries: state.entries, dishes: activeMenu() });
   candidates = personalizeCandidates(decisionSnapshot.current, state.entries);
   // 所有符合条件的菜都入池，低分只降权，不会挤掉其他菜。
   cardPool = weightedPool(candidates, candidates.length);
@@ -212,17 +219,17 @@ window.addEventListener('hashchange', () => setPage(location.hash.slice(1), fals
 $$('[data-close]').forEach((button) => button.addEventListener('click', () => { $('#' + button.dataset.close).close(); if (button.dataset.close === 'choice-dialog') selectedDish = null; }));
 $$('dialog').forEach((dialog) => dialog.addEventListener('click', (event) => { if (event.target === dialog) { const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); } }));
 $('#choice-dialog').addEventListener('close', () => { selectedDish = null; });
-$('#period-options').addEventListener('click', (event) => { const button = event.target.closest('[data-period]'); if (button) { filters.period = button.dataset.period; filters.time = defaultTimes[filters.period]; applyFilters(); } });
+$('#period-options').addEventListener('click', (event) => { const button = event.target.closest('[data-period]'); if (button) { timing.liveStart = false; persist(); filters.period = button.dataset.period; filters.time = defaultTimes[filters.period]; applyFilters(); } });
 $('#meal-budget').addEventListener('input', (event) => { filters.budget = event.target.value === '' ? 0 : Number(event.target.value); $('#budget-range').value = Math.min(100, Math.max(3, filters.budget)); cancelDraw(); renderStudent(); });
 $('#budget-range').addEventListener('input', (event) => { filters.budget = Number(event.target.value); applyFilters(); });
-$('#meal-time').addEventListener('change', (event) => { decisionUI?.stopDemo();filters.time = event.target.value; const inferred = inferPeriod(filters.time); if (inferred) filters.period = inferred; applyFilters(); });
+$('#meal-time').addEventListener('change', (event) => { timing.liveStart = false; decisionUI?.stopDemo();persist();filters.time = event.target.value; const inferred = inferPeriod(filters.time); if (inferred) filters.period = inferred; applyFilters(); });
 $('#taste-select').addEventListener('change', (event) => { filters.taste = event.target.value; applyFilters(); });
 $('#window-select').addEventListener('change',(event)=>{filters.windowName=event.target.value;applyFilters();});
 $('#wait-range').addEventListener('input', (event) => { filters.maxWait = Number(event.target.value); applyFilters(); });
 const resetFilters = () => { decisionUI?.stopDemo();filters = { period:'lunch',budget:18,time:'11:30',canteenId:'canteen-3',windowName:'',taste:'all',maxWait:30 };Object.assign(timing,normalizeTiming());persist();applyFilters(); };
 $('#reset-filters').addEventListener('click', resetFilters);
 $('#candidate-list').addEventListener('click', (event) => { if (event.target.closest('#empty-reset')) { resetFilters(); return; } const button = event.target.closest('[data-dish]'); if (button) { cancelDraw(); showChoice(candidates.find((d) => d.id === button.dataset.dish)); } });
-$('#time-bars').addEventListener('click', (event) => { const button = event.target.closest('[data-time]'); if (button) { filters.time = button.dataset.time; applyFilters(); } });
+$('#time-bars').addEventListener('click', (event) => { const button = event.target.closest('[data-time]'); if (button) { timing.liveStart = false; persist(); filters.time = button.dataset.time; applyFilters(); } });
 $('#draw-button').addEventListener('click', draw);
 $('#draw-choice').addEventListener('click', () => { if (!drawing && drawnDish) showChoice(drawnDish); });
 $('#confirm-meal').addEventListener('click', () => {
@@ -242,7 +249,7 @@ $('#report-form').addEventListener('submit', (event) => {
   $('#report-status').textContent = stored ? `已发布：${targetTime} 预计等 ${minutes} 分钟。点击右侧按钮查看学生端。` : '已暂存本页，浏览器无法持久保存。';
   renderReports(); if (drawing) cancelDraw(); renderStudent();
 });
-$('#report-view').addEventListener('click', () => { const latest = state.reports.at(-1); if (latest) { filters.time = latest.targetTime; filters.period = latest.period; filters.windowName=activeWindows().includes(latest.windowName)?latest.windowName:''; applyFilters(); } setPage('student'); });
+$('#report-view').addEventListener('click', () => { const latest = state.reports.at(-1); if (latest) { timing.liveStart=false;persist();filters.time = latest.targetTime; filters.period = latest.period; filters.windowName=activeWindows().includes(latest.windowName)?latest.windowName:''; applyFilters(); } setPage('student'); });
 $('#report-list').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-report]'); if (!button) return; state.reports = state.reports.filter((r) => r.id !== button.dataset.deleteReport); persist(); renderReports(); cancelDraw(); renderStudent(); toast('已删除该条本机报数。'); });
 $('#wallet-form').addEventListener('submit', (event) => {
   event.preventDefault(); const limit = Number($('#monthly-limit').value), openingSpent = Number($('#opening-spent').value);
@@ -285,19 +292,20 @@ const localParts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'A
 $('#history-time').value=`${localParts.year}-${localParts.month}-${localParts.day}T${localParts.hour}:${localParts.minute}`;
 const aboutParagraphs=$$('#about-dialog .about-copy p');
 aboutParagraphs[0].textContent='优先使用30分钟内的适用报数；其次取近30天、同窗口、同餐段、相近时刻、同为平日或周末、同等待口径的至少3条记录的中位数。09号另有10/18周日11:30的单次实测8分钟，相近周末时刻标为“单次实测参考”。其余采用演示客流曲线与21秒/人参数。';
-aboutParagraphs[1].textContent='总用时＝去程＋排队＋出餐＋用餐＋返回。排队至取餐的实测已含出餐，不重复添加。TimeShift每隔5分钟比较出发方案，并筛掉超预算、等待超限或不能按时返回的菜品。';
+aboutParagraphs[1].textContent='总用时＝去程＋排队＋出餐＋用餐＋返回。已含出餐的记录不重复计时。TimeShift每隔5分钟比较出发安排，筛掉超预算、等待超限或不能按时返回的菜品，列出不同菜品的赶时间、省饭钱和综合备选。综合得分按时间0.45、价格0.35、偏好0.20计算。“现在出发”每30秒按当前时间重算。';
 aboutParagraphs[2].textContent='时间、省钱、口味三项按当前目标加权，得到适合度s。抽取权重w＝exp(6s)×个人评分系数：1星0.25、2星0.5、3星1、4星1.5、5星2。未评为1；同菜采用最近一次评价，修改时替换。所有符合预算和时间的菜均入卡池，权重归一化为概率。';
 aboutParagraphs[3].textContent=`照片菜单来自10/18第三食堂午间采集，共${CAMPUS_MENU.length}道。窗口菜价与排队来源分别标注。营养助手按菜单组合生成基础搭配；当前照片菜单还缺早餐、晚餐。`;
-aboutParagraphs[4].textContent='照片菜单与现场采集记录随网站共享。本机补录、报数、餐费和个人评价保存在当前浏览器，可导出备份；共享讨论、反馈、公开评价和DeepSeek待接服务器。';
+aboutParagraphs[4].textContent='照片菜单与现场采集记录随网站共享。本机补录、报数、餐费和个人评价保存在当前浏览器，可导出备份。“想吃什么”问卷可保存、修改并导出CSV和JSON，交给项目组汇总。共享讨论、反馈、公开评价和DeepSeek待接服务器。';
 personalReviews=createPreferencesUI({getEntries:()=>state.entries,save:persist,onChange:()=>{cancelDraw();renderStudent();renderWallet();},onShare:(entry)=>community?.openReview(entry),toast});
 community=createCommunity({toast,refreshLedger:renderWallet,refreshMenu:renderStudent});
+createSurvey({toast});
 decisionUI=createDecisionUI({getTiming:()=>timing,getFilters:()=>filters,onChange:(next,transient)=>{
   Object.assign(timing,normalizeTiming({...timing,...next}));if(!transient)persist();applyFilters();
-},onDeparture:(time)=>{const arrival=shiftClock(time,timing.walkOut);if(!arrival)return;filters.time=arrival;const period=inferPeriod(arrival);if(period)filters.period=period;applyFilters();},onPick:(plan)=>{
-  filters.time=plan.arrival;timing.available=Math.max(1,timing.available-plan.delay);persist();applyFilters();const current=candidates.find((dish)=>dish.id===plan.id);if(current)showChoice(current);
+},onDeparture:(time)=>{const arrival=shiftClock(time,timing.walkOut);if(!arrival)return;timing.liveStart=false;filters.time=arrival;const period=inferPeriod(arrival);if(period)filters.period=period;persist();applyFilters();},onNow:()=>{timing.liveStart=!timing.liveStart;persist();applyFilters();},onPick:(plan)=>{
+  timing.liveStart=false;filters.time=plan.arrival;timing.available=Math.max(1,timing.available-plan.delay);persist();applyFilters();const current=candidates.find((dish)=>dish.id===plan.id);if(current)showChoice(current);
 }});
 createNutrition({getMenu:activeMenu,getMenuMode:()=>state.menuMode,toast,selectMeal:(meal)=>{
-  filters.period=meal.period;filters.time=defaultTimes[meal.period];filters.budget=Math.max(filters.budget,meal.price);filters.windowName=meal.windowName||'';filters.taste='all';
+  timing.liveStart=false;persist();filters.period=meal.period;filters.time=defaultTimes[meal.period];filters.budget=Math.max(filters.budget,meal.price);filters.windowName=meal.windowName||'';filters.taste='all';
   applyFilters();setPage('student');
   const dish=candidates.find((item)=>item.id===meal.id);
   if(dish)showChoice(dish);else toast('这餐超出当前用时或等待上限，可以调整条件。');
